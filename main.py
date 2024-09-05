@@ -1,3 +1,4 @@
+import logging
 import re
 from urllib.parse import urljoin
 
@@ -5,40 +6,42 @@ import requests_cache
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 
+from configs import configure_argument_parser, configure_logging
 from constants import BASE_DIR, MAIN_DOC_URL
-
-from configs import configure_argument_parser
+from outputs import control_output
+from utils import get_response
 
 
 def whats_new(session):
     whats_new_url = urljoin(MAIN_DOC_URL, "whatsnew/")
-    response = session.get(whats_new_url)
-    response.encoding = "utf-8"
+    response = get_response(session, whats_new_url)
+    if response is None:
+        return
     soup = BeautifulSoup(response.text, features="lxml")
     main_div = soup.find("section", attrs={"id": "what-s-new-in-python"})
     div_with_ul = main_div.find("div", attrs={"class": "toctree-wrapper"})
     sections_by_python = div_with_ul.find_all(
         "li", attrs={"class": "toctree-l1"}
     )
-    result = []
+    result = [("Ссылка на статью", "Заголовок", "Редактор, автор")]
     for a in tqdm(sections_by_python):
         href = a.find("a")["href"]
         version_link = urljoin(whats_new_url, href)
-        response = session.get(version_link)
-        response.encoding = "utf-8"
+        response = get_response(session, version_link)
+        if response is None:
+            continue
         soup = BeautifulSoup(response.text, features="lxml")
         h1 = soup.find("h1")
         dl = soup.find("dl")
         dl_text = dl.text.replace("\n", "")
         result.append((version_link, h1.text, dl_text))
-
-    for row in result:
-        print(*row)
+    return result
 
 
 def latest_versions(session):
-    response = session.get(MAIN_DOC_URL)
-    response.encoding = "utf-8"
+    response = get_response(session, MAIN_DOC_URL)
+    if response is None:
+        return
     soup = BeautifulSoup(response.text, "lxml")
     sidebar = soup.find("div", attrs={"class": "sphinxsidebarwrapper"})
     ul_tags = sidebar.find_all("ul")
@@ -48,7 +51,7 @@ def latest_versions(session):
             break
     else:
         raise Exception("Nothing")
-    result = []
+    result = [("Ссылка на документацию", "Версия", "Статус")]
     pattern = r"Python (?P<version>\d\.\d+) \((?P<status>.*)\)"
     for a_tag in a_tags:
         link = a_tag["href"]
@@ -58,14 +61,14 @@ def latest_versions(session):
         else:
             version, status = a_tag.text, ""
         result.append((link, version, status))
-    for row in result:
-        print(*row)
+    return result
 
 
 def download(session):
     downloads_url = urljoin(MAIN_DOC_URL, "download.html")
-    response = session.get(downloads_url)
-    response.encoding = "utf-8"
+    response = get_response(session, downloads_url)
+    if response is None:
+        return
     soup = BeautifulSoup(response.text, features="lxml")
     table_tag = soup.find("table", attrs={"class": "docutils"})
     pdf_a4_tag = table_tag.find("a", {"href": re.compile(r".+pdf-a4\.zip$")})
@@ -77,6 +80,7 @@ def download(session):
     response = session.get(archive_url)
     with open(archive_path, "wb") as file:
         file.write(response.content)
+    logging.info(f"Архив был загружен и сохранён: {archive_path}")
 
 
 MODE_TO_FUNCTION = {
@@ -87,14 +91,23 @@ MODE_TO_FUNCTION = {
 
 
 def main():
+    configure_logging()
+    logging.info("Парсер запущен!")
+
     arg_parser = configure_argument_parser(MODE_TO_FUNCTION.keys())
     args = arg_parser.parse_args()
+    logging.info(f"Аргументы командной строки: {args}")
+
     session = requests_cache.CachedSession()
     if args.clear_cache:
         session.cache.clear()
 
     parser_mode = args.mode
     results = MODE_TO_FUNCTION[parser_mode](session)
+
+    if results is not None:
+        control_output(results, args)
+    logging.info("Парсер завершил работу.")
 
 
 if __name__ == "__main__":
